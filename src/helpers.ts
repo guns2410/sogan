@@ -34,6 +34,7 @@ export function getCpuUsage() {
 
 export function getMemoryUsage() {
   const total = os.totalmem() - (200 * 1024 * 1024)
-  const used = memoryUsage.rss()
+  const usage = process.memoryUsage()
+  const used = usage.rss + usage.heapTotal + usage.external
   return used / total
 }
