@@ -70,6 +70,10 @@ export class Queue extends EventEmitter {
 
   }
 
+  get currentConcurrency() {
+    return this.concurrency
+  }
+
   get cpuUsage() {
     return getCpuUsage()
   }
