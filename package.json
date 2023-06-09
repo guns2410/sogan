@@ -1,6 +1,6 @@
 {
   "name": "sogan",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A promise queue for node.js with a focus on concurrency and performance.",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",

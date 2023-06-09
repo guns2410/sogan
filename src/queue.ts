@@ -30,6 +30,10 @@ export class Queue {
     this.startSystemStatsCheck(this.checkInterval)
   }
 
+  get currentConcurrency(): number {
+    return this.concurrency
+  }
+
   // Push a new Task into the Queue
   enqueue(task: Task) {
     const promise = () => new Promise((resolve, reject) => {
@@ -77,24 +81,17 @@ export class Queue {
 
   // Function to check system stats and adjust concurrency
   private checkSystemStats(): void {
-    const freeMemPercentage = (os.freemem() / os.totalmem()) * 100
+    const freeMemPercentage = (os.freemem() / os.totalmem())
     const cpuUsage = (os.loadavg()[0] / os.cpus().length) // 1 minute load average
     const memFactor = freeMemPercentage > this.memoryThreshold ? ((freeMemPercentage - this.memoryThreshold) / 100) : 0
     const cpuFactor = cpuUsage < this.cpuThreshold ? ((this.cpuThreshold - cpuUsage) / this.cpuThreshold) : 0
     const increaseFactor = Math.min(memFactor, cpuFactor)
     const decreaseFactor = 1 - increaseFactor;
 
-    console.log(`Free memory: ${freeMemPercentage}%`, this.memoryThreshold, freeMemPercentage > this.memoryThreshold)
-    console.log(`CPU usage: ${cpuUsage}%`, this.cpuThreshold, cpuUsage < this.cpuThreshold)
-    console.log(`Concurrency: ${this.concurrency}`)
-
-
     if (increaseFactor > 0) {
         this.concurrency = Math.ceil(this.concurrency * (1 + increaseFactor));
-        console.log(`Increasing concurrency to ${this.concurrency}`)
     } else if (decreaseFactor > 0) {
         this.concurrency = Math.max(1, Math.floor(this.concurrency * (1 - decreaseFactor)));
-        console.log(`Decreasing concurrency to ${this.concurrency}`)
     }
   }
 
