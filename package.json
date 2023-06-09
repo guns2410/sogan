@@ -1,13 +1,14 @@
 {
   "name": "sogan",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "A promise queue for node.js with a focus on concurrency and performance.",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "scripts": {
     "dev": "nodemon --watch ./src --ext ts --exec \"npm run build\"",
     "build": "rm -rf dist && tsc -p tsconfig.json",
-    "prepublish": "npm run build"
+    "prepublish": "npm run build",
+    "publish:npm": "npm run build && npm publish --access public"
   },
   "repository": {
     "type": "git",

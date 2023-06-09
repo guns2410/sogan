@@ -34,8 +34,16 @@ export class Queue {
     return this.concurrency
   }
 
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
   // Push a new Task into the Queue
-  enqueue(task: Task) {
+  async enqueue(task: Task): Promise<{ promise: () => Promise<any> }> {
+    if (this.running >= this.concurrency) {
+      await this.sleep(100)
+      return this.enqueue(task)
+    }
     const promise = () => new Promise((resolve, reject) => {
       task()
         .then(resolve)
