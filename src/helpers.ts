@@ -1,40 +1,39 @@
-import os from 'os'
-import { memoryUsage, cpuUsage } from 'node:process'
+import * as os from 'node:os'
 
-const ncpu = os.cpus().length
-let previousTime = new Date().getTime()
-let previousUsage = process.cpuUsage()
-let lastUsage: { user: number; system: number; total: number } = { user: 0, system: 0, total: 0 }
-
-setInterval(() => {
-  const currentUsage = process.cpuUsage(previousUsage)
-
-  previousUsage = process.cpuUsage()
-
-  // we can't do simply time / 10000 / ncpu because we can't trust
-  // setInterval is executed exactly every 1.000.000 microseconds
-  const currentTime = new Date().getTime()
-  // times from process.cpuUsage are in microseconds while delta time in milliseconds
-  // * 10 to have the value in percentage for only one cpu
-  // * ncpu to have the percentage for all cpus af the host
-
-  // this should match top's %CPU
-  const timeDelta = (currentTime - previousTime) * 10 * ncpu
-  // this would take care of CPUs number of the host
-  // const timeDelta = (currentTime - previousTime) * 10 * ncpu;
-  const { user, system } = currentUsage
-
-  lastUsage = { system: system / timeDelta, total: (system + user) / timeDelta, user: user / timeDelta }
-  previousTime = currentTime
-}, 1000)
-
-export function getCpuUsage() {
-  return lastUsage.total
+export async function getSystemStats() {
+  const [cpu, memory] = await Promise.all([getCPUUsage(), getMemoryUsage()])
+  return { cpu, memory }
 }
 
-export function getMemoryUsage() {
-  const total = os.totalmem() - (200 * 1024 * 1024)
-  const usage = process.memoryUsage()
-  const used = usage.rss + usage.heapTotal + usage.external
-  return used / total
+function getCPUInfo() {
+  const cpus = os.cpus()
+  return cpus.reduce((acc, cpu) => {
+    acc.idle += cpu.times.idle
+    acc.total += cpu.times.idle + cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.irq
+    return acc
+  }, { idle: 0, total: 0 })
+}
+
+async function getCPUUsage() {
+  const cpuStart = getCPUInfo()
+  const cpuEnd = await new Promise<{
+    total: number,
+    idle: number
+  }>((resolve, reject) => {
+    setTimeout(() => {
+      resolve(getCPUInfo())
+    }, 1000)
+  })
+
+  const idle = cpuEnd.idle - cpuStart.idle
+  const total = cpuEnd.total - cpuStart.total
+  return 1 - idle / total
+}
+
+async function getMemoryUsage() {
+  const total = os.totalmem()
+  const free = os.freemem()
+  const used = total - free
+
+  return 1 - (free / total)
 }

@@ -1,6 +1,6 @@
-import * as os from 'os'
-
-type Task = () => Promise<any>;
+import { Task }         from './task'
+import { EventEmitter } from 'events'
+import { getSystemStats } from './helpers'
 
 export type QueueOptions = {
   maxConcurrency: number
@@ -9,25 +9,70 @@ export type QueueOptions = {
   initialConcurrency: number
 }
 
-export class Queue {
-  private cpuThreshold: number
-  private memoryThreshold: number
+abstract class QueueEvents {
+  static readonly PROCESS_TASK = 'process_task'
+  static readonly CHECK_SYSTEM_STATS = 'check_system_stats'
+  static running = 0
+
+  static QueueEvents = [] as Array<Task<any>>
+
+  static addEvent(event: Task<any>) {
+    this.QueueEvents.push(event)
+    this.QueueEvents.sort((a, b) => b.priority - a.priority)
+  }
+
+  static getNextEvent(): Task<any> | undefined {
+    return this.QueueEvents.shift()
+  }
+
+  static getQueueLength(): number {
+    return this.QueueEvents.length
+  }
+
+  static async processEvent(task: Task<any>) {
+    if (!task) return
+
+    this.running++
+    await task.run()
+    this.running--
+  }
+
+}
+
+export class Queue extends EventEmitter {
+  private readonly cpuThreshold: number
+  private readonly memoryThreshold: number
   private concurrency: number
-  private maxConcurrency: number
-  private queue: Task[]
-  private running: number
+  private readonly maxConcurrency: number
   private interval: NodeJS.Timeout | null
-  private checkInterval: number = 10000
 
   constructor(opts: Partial<QueueOptions> = {}) {
+    super()
     this.cpuThreshold = opts.maxCpuUsage || 0.8
     this.memoryThreshold = opts.maxMemoryUsage || 0.8
     this.concurrency = opts.initialConcurrency || 1
     this.maxConcurrency = opts.maxConcurrency || Infinity
-    this.queue = []
-    this.running = 0
     this.interval = null
-    this.startSystemStatsCheck(this.checkInterval)
+
+    this.waitUntilQueueIsReady = this.waitUntilQueueIsReady.bind(this)
+    this.enqueue = this.enqueue.bind(this)
+    this.done = this.done.bind(this)
+    this.addToQueue = this.addToQueue.bind(this)
+    this.next = this.next.bind(this)
+    this.checkSystemStats = this.checkSystemStats.bind(this)
+    this.startSystemStatsCheck = this.startSystemStatsCheck.bind(this)
+    this.stopSystemStatsCheck = this.stopSystemStatsCheck.bind(this)
+    this.sleep = this.sleep.bind(this)
+
+    this.on(QueueEvents.CHECK_SYSTEM_STATS, async () => {
+      await this.checkSystemStats()
+    })
+
+    this.on(QueueEvents.PROCESS_TASK, async () => {
+      await this.next()
+    })
+
+    this.checkSystemStats().then(r => r)
   }
 
   get currentConcurrency(): number {
@@ -39,25 +84,32 @@ export class Queue {
   }
 
   // Push a new Task into the Queue
-  async enqueue(task: Task): Promise<{ promise: () => Promise<any> }> {
-    if (this.running >= this.concurrency) {
-      await this.sleep(100)
-      return this.enqueue(task)
-    }
-    const promise = () => new Promise((resolve, reject) => {
-      task()
-        .then(resolve)
-        .catch(reject)
-    }).finally(() => { this.next() })
-    this.queue.push(promise)
-    this.next()
-    return { promise }
+  async enqueue<ReturnValue>(fn: () => Promise<ReturnValue>, priority: number = 0, deadline: number | null = null): Promise<{
+    result: Promise<ReturnValue>
+  }> {
+    await this.waitUntilQueueIsReady()
+
+    const task = new Task<ReturnValue>({ fn, priority, deadline })
+    this.addToQueue(task)
+
+    return { result: task.promise }
+  }
+
+  async waitUntilQueueIsReady(): Promise<void> {
+    await new Promise((resolve) => {
+      const interval = setInterval(() => {
+        if (QueueEvents.getQueueLength() < this.concurrency) {
+          clearInterval(interval)
+          resolve(true)
+        }
+      }, 10)
+    })
   }
 
   async done() {
     await new Promise((resolve, reject) => {
       const interval = setInterval(() => {
-        if (this.queue.length === 0 && this.running === 0) {
+        if (QueueEvents.getQueueLength() === 0 && QueueEvents.running === 0) {
           clearInterval(interval)
           resolve(true)
         }
@@ -65,52 +117,61 @@ export class Queue {
     })
   }
 
+  private addToQueue<T>(task: Task<T>): void {
+    QueueEvents.addEvent(task)
+    this.emit(QueueEvents.PROCESS_TASK)
+  }
+
   // Run the next Task
-  private next(): void {
-    if (this.running >= this.concurrency || this.queue.length === 0) {
+  private async next(): Promise<Promise<void> | void> {
+    // console.info('Queue length:', QueueEvents.getQueueLength(), 'Running:', QueueEvents.running, 'Concurrency:', this.concurrency)
+    if (QueueEvents.running >= this.concurrency) {
       return
     }
 
-    this.running++
-    const task = this.queue.shift()
+    const task = QueueEvents.getNextEvent()
     if (task) {
-      task()
-        .then(() => {
-          this.running--
-          this.next()
-        })
-        .catch((err) => {
-          this.running--
-          this.next()
-        })
+      await QueueEvents.processEvent(task)
+      this.emit(QueueEvents.PROCESS_TASK)
     }
-    this.next()
   }
 
   // Function to check system stats and adjust concurrency
-  private checkSystemStats(): void {
-    const freeMemPercentage = (os.freemem() / os.totalmem())
-    const cpuUsage = (os.loadavg()[0] / os.cpus().length) // 1 minute load average
-    const memFactor = freeMemPercentage > this.memoryThreshold ? ((freeMemPercentage - this.memoryThreshold) / 100) : 0
-    const cpuFactor = cpuUsage < this.cpuThreshold ? ((this.cpuThreshold - cpuUsage) / this.cpuThreshold) : 0
+  private async checkSystemStats(): Promise<void> {
+    const currentConcurrency = this.concurrency
+    const { cpu, memory } = await getSystemStats()
+    const memFactor = memory < this.memoryThreshold ? (this.memoryThreshold - memory) : 0
+    const cpuFactor = cpu < this.cpuThreshold ? ((this.cpuThreshold - cpu) / this.cpuThreshold) : 0
     const increaseFactor = Math.min(memFactor, cpuFactor)
-    const decreaseFactor = 1 - increaseFactor;
+    const decreaseFactor = 1 - increaseFactor
 
     if (increaseFactor > 0) {
-        this.concurrency = Math.ceil(this.concurrency * (1 + increaseFactor));
+      this.concurrency = Math.ceil(this.concurrency * (1 + increaseFactor))
     } else if (decreaseFactor > 0) {
-        this.concurrency = Math.max(1, Math.floor(this.concurrency * (1 - decreaseFactor)));
+      this.concurrency = Math.max(1, Math.floor(this.concurrency * (1 - decreaseFactor)))
     }
+
+    if (this.concurrency > this.maxConcurrency) {
+      this.concurrency = this.maxConcurrency
+    }
+
+    if (currentConcurrency !== this.concurrency) {
+      this.emit('concurrency_change', this.concurrency)
+    }
+
+    // console.info(`System stats: CPU: ${cpu.toFixed(2)} / ${this.cpuThreshold.toFixed(2)} | Memory: ${memory.toFixed(2)} / ${this.memoryThreshold.toFixed(2)} | Concurrency: ${this.concurrency}`)
+    this.sleep(1000).then(() => this.emit(QueueEvents.CHECK_SYSTEM_STATS))
+    this.emit(QueueEvents.PROCESS_TASK)
   }
 
   // Function to start system stats check in intervals
-  startSystemStatsCheck(interval: number): void {
+  private startSystemStatsCheck(interval: number): void {
     if (this.interval) {
       clearInterval(this.interval)
     }
-    this.interval = setInterval(() => {
-      this.checkSystemStats()
-      this.next()  // Trigger the queue processing after adjusting the concurrency
+    this.interval = setInterval(async () => {
+      // console.info('Checking system stats...')
+      await this.checkSystemStats()
     }, interval)
   }
 
